@@ -1,11 +1,5 @@
-// ESE 680
-// RRT assignment
-// Author: Hongrui Zheng
+// Author: Yuwei Wang
 
-// This file contains the class definition of tree nodes and RRT
-// Before you start, please read: https://arxiv.org/pdf/1105.1186.pdf
-
-// ros
 #include <ros/ros.h>
 #include <ros/package.h>
 #include <sensor_msgs/LaserScan.h>
@@ -16,7 +10,7 @@
 #include <ackermann_msgs/AckermannDriveStamped.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <tf/transform_listener.h>
-
+#include <nav_msgs/Path.h>
 // standard
 #include <math.h>
 #include <vector>
@@ -33,9 +27,7 @@
 #include <nav_msgs/Odometry.h>
 #include <visualization_msgs/Marker.h>
 
-// Struct defining the Node object in the RRT tree.
-// More fields could be added to this struct if more info needed.
-// You can choose to use this or not
+
 typedef struct Node {
     double x, y;
     double cost; // only used for RRT*
@@ -52,37 +44,44 @@ private:
     ros::NodeHandle nh_;
 
     // ros pub/sub
-
-
     ros::Subscriber odom_sub_;
     ros::Subscriber scan_sub_;
+
+    ros::Publisher drive_pub_;
     ros::Publisher obstacle_viz_pub_;
     ros::Publisher path_pub_;
     ros::Publisher tree_viz_pub_;
-    // tf stuff
+    ros::Publisher pos_sp_viz_pub_;
+
     tf::TransformListener listener;
+    tf::Transform tf_;
+    tf::Vector3 pos_sp_;   // setpoint for pure pursuit to track
 
     nav_msgs::OccupancyGrid map_;
     nav_msgs::OccupancyGrid map_updated_;
 
     geometry_msgs::Pose car_pose_;
-    // random generator, use this
+    std::vector<geometry_msgs::Point> waypoints_;
+    int curr_goal_ind_;
+    bool advance_goal_;
 
     std::mt19937 gen_;
-   // std::uniform_real_distribution<> x_distribution;
-   // std::uniform_real_distribution<> y_distribution;
-   std::uniform_real_distribution<> uni_dist_;
 
-    // callbacks
-    // where rrt actually happens
+    std::uniform_real_distribution<> uni_dist_;
+
     void odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg);
-    // updates occupancy grid
     void scan_callback(const sensor_msgs::LaserScan::ConstPtr& scan_msg);
 
-    // RRT methods
     void init_occupancy_grid();
     void visualize_map();
-    void visualize_tree(std::vector<Node>& tree);
+    void load_waypoints(std::string file_name);
+
+    //RRT
+    void get_current_goal();
+    void reset_goal();
+    void advance_goal();
+    int find_closest_waypoint(const std::vector<geometry_msgs::Point>& waypoints, const geometry_msgs::Pose& pose);
+
     std::vector<double> sample();
     int nearest(std::vector<Node> &tree, std::vector<double> &sampled_point);
     Node steer(Node &nearest_node, std::vector<double> &sampled_point);
@@ -93,6 +92,7 @@ private:
     double cost(std::vector<Node> &tree, Node &node);
     double line_cost(Node &n1, Node &n2);
     std::vector<int> near(std::vector<Node> &tree, Node &node);
-
+    void visualize_tree(std::vector<Node>& tree);
+    void track_path(const nav_msgs::Path& path);
+    void publish_cmd(float steering_cmd);
 };
-

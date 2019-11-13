@@ -141,7 +141,7 @@ include_directories(
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-add_executable(rrt_node node/rrt_node.cpp src/rrt.cpp include/rrt/occupancy_grid.h)
+add_executable(rrt_node node/rrt_node.cpp src/rrt.cpp include/rrt/occupancy_grid.h include/rrt/CSVReader.h)
 add_dependencies(rrt_node ${f110_rrt_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Rename C++ executable without prefix

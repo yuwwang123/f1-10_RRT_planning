@@ -1,5 +1,5 @@
 //
-// Created by yuwei on 11/9/19.
+// Created by Yuwei Wang on 11/9/19.
 //
 
 #ifndef SRC_OCCUPANCY_GRID_H
@@ -72,7 +72,6 @@ namespace occupancy_grid{
             if (grid.data.at(i)>THRESHOLD){
                 occupied_ind.push_back(i);
             }
-            cout<<"cell value: "<<int(grid.data[i])<<endl;
         }
         for (int i=0; i<occupied_ind.size(); i++){
             inflate_cell(grid, occupied_ind[i], margin);
