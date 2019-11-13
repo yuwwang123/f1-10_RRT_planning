@@ -1,10 +1,4 @@
-// ESE 680
-// RRT assignment
-// Author: Hongrui Zheng
-
-// This file contains the node definition for RRT
-// Before you start, please read: https://arxiv.org/pdf/1105.1186.pdf
-
+// AUthor: Yuwei Wang
 
 #include "rrt/rrt.h"
 
