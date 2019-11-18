@@ -9,17 +9,21 @@
 
 using namespace std;
 
-const float MARGIN = 0.2;
-const int MAX_ITER = 200;
-const double X_SAMPLE_RANGE = 4.0;
-const double Y_SAMPLE_RANGE = 4.0;
-const double GOAL_THRESHOLD = 0.2;
-const double STEER_RANGE = 0.5;
-const float SCAN_RANGE = sqrt(pow(X_SAMPLE_RANGE,2.0)+ pow(Y_SAMPLE_RANGE, 2.0));
-const float MAX_GOAL_AHEAD_DIST = min(X_SAMPLE_RANGE, Y_SAMPLE_RANGE) * 0.8;
-const float LOOK_AHEAD_DIST = 0.5;
+const float MARGIN = 0.18;
+const float DETECTED_OBS_MARGIN = 0.2;
+const int MAX_ITER = 800;
+const int MIN_ITER = 400;
+const double X_SAMPLE_RANGE = 3;
+const double Y_SAMPLE_RANGE = 3;
+const double STD = 1.0;   // standard deviation for normal distribution
+const double GOAL_THRESHOLD = 0.1;
+const double STEER_RANGE = 0.3;
+const float SCAN_RANGE = 3.0;
+const float GOAL_AHEAD_DIST = 2.5;
+const float LOOK_AHEAD_DIST = 0.4;
 const float P_GAIN = 0.3;
-const float SPEED = 2.0;
+const float SPEED = 3;
+const float NEAR_RANGE = 0.8;
 
 const string file_name = "/home/yuwei/rcws/logs/yuwei_wp.csv";
 
@@ -27,26 +31,48 @@ const string pose_topic = "odom";
 const string scan_topic = "scan";
 const string drive_topic = "nav";
 
-// Destructor of the RRT class
+
 RRT::~RRT() {
-    // Do something in here, free up used memory, print message, etc.
     ROS_INFO("RRT shutting down");
 }
 
-// Constructor of the RRT class
 RRT::RRT(ros::NodeHandle &nh): nh_(nh), gen_((std::random_device())()) {
 
     // ROS publishers & subscribers
     odom_sub_ = nh_.subscribe(pose_topic, 10, &RRT::odom_callback, this);
     scan_sub_ = nh_.subscribe(scan_topic, 10, &RRT::scan_callback, this);
 
-    drive_pub_ = nh_.advertise<ackermann_msgs::AckermannDriveStamped>(drive_topic, 10);
-    obstacle_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("obstacles_inflated", 10);
-    path_pub_ = nh_.advertise<nav_msgs::Path>("path_found", 10);
-    tree_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("rrt_tree", 10);
-    pos_sp_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("pos_sp_", 10);
-    std::uniform_real_distribution<double> distribution(-1.0,1.0);
-    uni_dist_ = distribution;
+    drive_pub_ = nh_.advertise<ackermann_msgs::AckermannDriveStamped>(drive_topic, 1);
+    obstacle_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("obstacles_inflated", 1);
+    path_pub_ = nh_.advertise<nav_msgs::Path>("path_found", 1);
+    tree_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("rrt_tree", 1);
+
+    pos_sp_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("pos_sp_", 1);
+    goal_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("goal", 1);
+    tree_nodes_pub_ = nh_.advertise<visualization_msgs::Marker>("tree_nodes", 1);
+    tree_branches_pub_ = nh_.advertise<visualization_msgs::Marker>("tree_branches", 1);
+
+    std::uniform_real_distribution<double> unit_dist(-1.0,1.0);
+    uni_dist_ = unit_dist;
+
+
+    std_msgs::ColorRGBA red; red.r =1.0; red.a=1.0;
+    std_msgs::ColorRGBA green; green.g =1.0; green.a=1.0;
+    std_msgs::ColorRGBA blue; blue.b =1.0; blue.a=1.0;
+
+    pos_sp_viz = new MarkerVisualizer(pos_sp_viz_pub_, "pos_sp", "laser", red, 0.2, visualization_msgs::Marker::SPHERE);
+    goal_viz = new MarkerVisualizer(goal_viz_pub_, "goal", "map", green, 0.3, visualization_msgs::Marker::SPHERE);
+
+    tree_nodes.header.frame_id = tree_branch.header.frame_id = "map";
+    tree_nodes.ns = "nodes"; tree_branch.ns = "branch";
+    tree_nodes.action = tree_branch.action = visualization_msgs::Marker::ADD;
+    tree_nodes.pose.orientation.w = tree_branch.pose.orientation.w = 1.0;
+    tree_nodes.id = 5; tree_branch.id = 6;
+    tree_nodes.type = visualization_msgs::Marker::POINTS;
+    tree_branch.type = visualization_msgs::Marker::LINE_LIST;
+    tree_nodes.scale.x = tree_nodes.scale.y = tree_nodes.scale.z = 0.05;
+    tree_branch.scale.x = 0.01;
+    tree_nodes.color = red; tree_branch.color = blue;
 
     init_occupancy_grid();
     visualize_map();
@@ -111,11 +137,7 @@ void RRT::load_waypoints(std::string file_name){
 }
 
 void RRT::scan_callback(const sensor_msgs::LaserScan::ConstPtr &msg) {
-    // The scan callback, update your occupancy grid here
-    // Args:
-    //    scan_msg (*LaserScan): pointer to the incoming scan message
-    // Returns:
-    //
+
     using namespace occupancy_grid;
     tf::Quaternion q_tf;
     tf::quaternionMsgToTF(car_pose_.orientation, q_tf);
@@ -140,88 +162,135 @@ void RRT::scan_callback(const sensor_msgs::LaserScan::ConstPtr &msg) {
             tf::Vector3 pos_in_car = tf::Vector3(range*cos(angle), range*sin(angle), 0.0);
             tf::Vector3 pos_in_map = tf_ * pos_in_car;
             if (!is_xy_occupied(map_, pos_in_map.x(), pos_in_map.y())){
-                set_xy_occupied(map_updated_, pos_in_map.x(), pos_in_map.y());
-                inflate_cell(map_updated_, xy2ind(map_updated_, pos_in_map.x(), pos_in_map.y()), 0.15);
+                inflate_cell(map_updated_, xy2ind(map_updated_, pos_in_map.x(), pos_in_map.y()), DETECTED_OBS_MARGIN, 100);
             }
         }
     }
+    // free the cells in which the car occupies (dynamic layer)
+    inflate_cell(map_updated_, xy2ind(map_updated_, origin.x(), origin.y()), 0.2, 0);
 }
 
+bool comp_cost(Node& n1, Node& n2){
+    return n1.cost < n2.cost;
+}
 void RRT::odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg) {
     // The pose callback when subscribed to particle filter's inferred pose
     // The RRT main loop happens here
-    // Args:
-    //    pose_msg (*PoseStamped): pointer to the incoming pose message
-    //Get start
+
+
     car_pose_ = odom_msg->pose.pose;
     Node start_node;
     start_node.x = car_pose_.position.x;
     start_node.y = car_pose_.position.y;
     start_node.parent = 0;
+    start_node.cost = 0.0;
     start_node.is_root = true;
-
     //Get Goal
     get_current_goal();
 
     std::vector<Node> tree;
+    std::vector<Node> nodes_near_goal;
+
+    tree.clear();
     tree.push_back(start_node);
-    Node latest_node = start_node;
-    bool no_path = false;
-    //  RRT main loop
-    for (int i=0; i<MAX_ITER; i++){
+    /***  RRT* main loop ***/
+    for (int iter=0; iter<MAX_ITER; iter++){
         vector<double> sampled_point = sample();
         int nearest_ind = nearest(tree, sampled_point);
         Node new_node = steer(tree.at(nearest_ind), sampled_point);
         if (!check_collision(tree.at(nearest_ind), new_node)){
-            new_node.is_root = false;
-            new_node.parent = nearest_ind;
+            vector<int> nodes_near = near(tree, new_node);
             tree.push_back(new_node);
-            latest_node = new_node;
-            if (is_goal(new_node, waypoints_.at(curr_goal_ind_).x, waypoints_.at(curr_goal_ind_).y)){
-                ROS_INFO("Path found");
-                break;
+
+            /** connect new_node to the node in the neighborhood with the minimum cost **/
+            int min_cost_node_ind = nearest_ind;
+            float min_cost = tree.at(nearest_ind).cost + line_cost(tree.at(nearest_ind), new_node);
+            for (int i=0; i<nodes_near.size(); i++){
+                if(!check_collision(tree.at(nodes_near.at(i)), new_node)){
+                    float cost = tree.at(nodes_near.at(i)).cost + line_cost(tree.at(nodes_near.at(i)), new_node);
+                    if(cost < min_cost) {
+                       min_cost_node_ind = nodes_near.at(i);
+                       min_cost = cost;
+                   }
+                }
+            }
+
+            tree.back().is_root = false;
+            tree.back().cost = min_cost;
+            // add edge
+            tree.back().parent = min_cost_node_ind;
+            tree.at(min_cost_node_ind).children.push_back(tree.size()-1);
+
+            /** Rewiring **/
+            int rewire_count = 0;
+            for (int j=0; j<int(nodes_near.size()); j++) {
+                float new_cost = tree.back().cost + line_cost(new_node, tree.at(nodes_near.at(j)));
+                if (new_cost < tree.at(nodes_near.at(j)).cost) {
+                    if (!check_collision(tree.at(nodes_near.at(j)), new_node)) {
+                        // rewire: update parent, cost and costs of all children;
+                        float cost_change = new_cost - tree.at(nodes_near.at(j)).cost;
+                        tree.at(nodes_near.at(j)).cost = new_cost;
+                        // assign new_node to be its new parent
+                        int old_parent = tree.at(nodes_near.at(j)).parent;
+                        tree.at(nodes_near.at(j)).parent = tree.size() - 1;
+                        tree.back().children.push_back(nodes_near.at(j));
+                        // remove it from its old parent's children list
+                        vector<int>::iterator start = tree.at(old_parent).children.begin();
+                        vector<int>::iterator end = tree.at(old_parent).children.end();
+                        tree.at(old_parent).children.erase(remove(start, end, nodes_near.at(j)), end);
+                        // update_children_cost(tree, nodes_near.at(j), cost_change); // optional(expensive)
+                    }
+                }
+                rewire_count ++;
+            }
+            //cout<<"rewire: "<<rewire_count<<endl;
+            if (is_goal(tree.back(), waypoints_.at(curr_goal_ind_).x, waypoints_.at(curr_goal_ind_).y)){
+                nodes_near_goal.push_back(tree.back());
             }
         }
-        if (i==MAX_ITER-1){
-            no_path = true;
-            ROS_INFO("Couldn't find a path");
+        /** check if goal reached and recover path with the minimum cost**/
+        if(iter>MIN_ITER && !nodes_near_goal.empty()){
+            Node best = *min_element(nodes_near_goal.begin(), nodes_near_goal.end(), comp_cost);
+            vector<Node> path_found = find_path(tree, nodes_near_goal.back());
+            nav_msgs::Path path;
+            path.header.frame_id = "map";
+            for (int i=0; i<path_found.size(); i++){
+                geometry_msgs::PoseStamped p;
+                p.pose.position.x = path_found.at(i).x;
+                p.pose.position.y = path_found.at(i).y;
+                p.pose.orientation.w = 1.0;
+                path.poses.push_back(p);
+            }
+            path_pub_.publish(path);
+            track_path(path);
+            visualize_tree(tree);
+            ROS_INFO("path found");
+            break;
         }
-    };
-    // construct path_found as Path message
-    if (!no_path){
-        vector<Node> path_found = find_path(tree, latest_node);
-        nav_msgs::Path path;
-        path.header.frame_id = "map";
-     //   bool pos_sp_found = false;
-      //  int pos_sp_ind = 0;
-        for (int i=0; i<path_found.size(); i++){
-            geometry_msgs::PoseStamped p;
-            p.pose.position.x = path_found.at(i).x;
-            p.pose.position.y = path_found.at(i).y;
-            p.pose.orientation.w = 1.0;
-            path.poses.push_back(p);
-        }
-        path_pub_.publish(path);
-        track_path(path);
-        visualize_tree(tree);
     }
 
+    if (nodes_near_goal.empty()){
+        ROS_INFO("Couldn't find a path");
+    }
 }
 
-float calculate_dist2(float x1, float x2, float y1, float y2){
+double calculate_dist2(double x1, double x2, double y1, double y2){
     // considering that doing sqrt is expensive
-    return (x1-x2)*(x1-x2) + (y1-y2)*(y1-y2);
+    return pow(x1-x2, 2) + pow(y1-y2,2);
 }
 
 void RRT::get_current_goal(){
     float dist_to_goal2 = calculate_dist2(waypoints_.at(curr_goal_ind_).x, car_pose_.position.x,
                               waypoints_.at(curr_goal_ind_).y,  car_pose_.position.y);
     // goal out of range, reset goal
-    if (dist_to_goal2 > pow(MAX_GOAL_AHEAD_DIST, 2)){
+    if (dist_to_goal2 > pow(GOAL_AHEAD_DIST, 2)){
         reset_goal();
     }
+    if (occupancy_grid::is_xy_occupied(map_updated_, waypoints_.at(curr_goal_ind_).x, waypoints_.at(curr_goal_ind_).y)){
+        advance_goal();
+    }
     // enough progress made, advance goal
-    else if(dist_to_goal2 < pow(MAX_GOAL_AHEAD_DIST*0.7, 2)){
+    else if(dist_to_goal2 < pow(GOAL_AHEAD_DIST*0.7, 2)){
         advance_goal();
     }
 }
@@ -235,7 +304,7 @@ void RRT::reset_goal(){
         int closest_ind = find_closest_waypoint(waypoints_, pose_ptr->pose.pose);
         float closest_dist2 = calculate_dist2(waypoints_.at(closest_ind).x, pose_ptr->pose.pose.position.x,
                                               waypoints_.at(closest_ind).y, pose_ptr->pose.pose.position.y);
-        if (closest_dist2 > pow(MAX_GOAL_AHEAD_DIST, 2)){
+        if (closest_dist2 > pow(GOAL_AHEAD_DIST, 2)){
             throw "Couldn't find a goal in range. Reposition the car somewhere near the waypoints";
         }
         // advance from closest waypoint until one that is around 0.9 GOAL_AHEAD_DIST away
@@ -253,12 +322,14 @@ void RRT::advance_goal(){
     float pose_y = car_pose_.position.y;
     float curr_dist2 = calculate_dist2(waypoints_.at(curr_ind).x, pose_x, waypoints_.at(curr_ind).y, pose_y);
 
-    while(curr_dist2 < pow(MAX_GOAL_AHEAD_DIST*0.9, 2)
+    while(curr_dist2 < pow(GOAL_AHEAD_DIST*0.9, 2)
       || is_xy_occupied(map_updated_, waypoints_.at(curr_ind).x, waypoints_.at(curr_ind).y)){
         curr_dist2 = calculate_dist2(waypoints_.at(curr_ind).x, pose_x, waypoints_.at(curr_ind).y, pose_y);
         curr_ind++;
         if (curr_ind >= waypoints_.size()) {curr_ind = 0;}
-        if (curr_dist2 > pow(MAX_GOAL_AHEAD_DIST, 2)){break;}
+        if (curr_dist2 > pow(GOAL_AHEAD_DIST, 2) && is_xy_occupied(map_updated_, waypoints_.at(curr_ind).x, waypoints_.at(curr_ind).y)){
+            break;
+        }
     }
     curr_goal_ind_ = max(0, curr_ind-1);
 }
@@ -280,8 +351,13 @@ std::vector<double> RRT::sample() {
     // This method returns a sampled point from the free space
 
     std::vector<double> sampled_point;
-    double x = car_pose_.position.x + uni_dist_(gen_)*X_SAMPLE_RANGE;
-    double y = car_pose_.position.y + uni_dist_(gen_)*Y_SAMPLE_RANGE;
+
+   // double x = car_pose_.position.x + uni_dist_(gen_)*X_SAMPLE_RANGE;
+   // double y = car_pose_.position.y + uni_dist_(gen_)*Y_SAMPLE_RANGE;
+    std::normal_distribution<double> norm_dist_x(waypoints_.at(curr_goal_ind_).x, STD);
+    std::normal_distribution<double> norm_dist_y(waypoints_.at(curr_goal_ind_).y, STD);
+    double x = norm_dist_x(gen_);
+    double y = norm_dist_y(gen_);
 
     // sample recursively until one in the free space gets returned
     if (!occupancy_grid::is_xy_occupied(map_updated_,x, y)){
@@ -303,21 +379,21 @@ int RRT::nearest(std::vector<Node> &tree, std::vector<double> &sampled_point) {
     //     nearest_node (int): index of nearest node on the tree
 
     int nearest_node = 0;
-    double min_dist2 = 100000.0;
-    for (int i=0; i<tree.size(); i++){
-        double dist2 = calculate_dist2(tree.at(i).x, sampled_point[0], tree.at(i).y, sampled_point[1]);
-        if (dist2<min_dist2){
+    double min_dist = 100000.0;
+    for (int i=0; i<int(tree.size()); i++){
+        double dist = calculate_dist2(tree.at(i).x, sampled_point[0], tree.at(i).y, sampled_point[1]);
+        if (dist<min_dist){
             nearest_node = i;
-            min_dist2 = dist2;
+            min_dist = dist;
         }
     }
     return nearest_node;
 }
 
 Node RRT::steer(Node &nearest_node, std::vector<double> &sampled_point) {
-    // The function steer:(x,y)->z returns a point such that z is “closer” 
-    // to y than x is. The point z returned by the function steer will be 
-    // such that z minimizes ||z−y|| while at the same time maintaining 
+    // The function steer:(x,y)->z returns a point such that z is “closer”
+    // to y than x is. The point z returned by the function steer will be
+    // such that z minimizes ||z−y|| while at the same time maintaining
     //||z−x|| <= max_expansion_dist, for a prespecified max_expansion_dist > 0
 
     // basically, expand the tree towards the sample point (within a max dist)
@@ -337,13 +413,8 @@ Node RRT::steer(Node &nearest_node, std::vector<double> &sampled_point) {
 }
 
 bool RRT::check_collision(Node &nearest_node, Node &new_node) {
-    // This method returns a boolean indicating if the path between the 
+    // This method returns a boolean indicating if the path between the
     // nearest node and the new node created from steering is collision free
-    // Args:
-    //    nearest_node (Node): nearest node on the tree to the sampled point
-    //    new_node (Node): new node created from steering
-    // Returns:
-    //    collision (bool): true if in collision, false otherwise
 
     bool collision = false;
     using namespace occupancy_grid;
@@ -366,97 +437,76 @@ bool RRT::check_collision(Node &nearest_node, Node &new_node) {
 
 bool RRT::is_goal(Node &latest_added_node, double goal_x, double goal_y) {
     // This method checks if the latest node added to the tree is close
-    // enough (defined by goal_threshold) to the goal so we can terminate
-    // the search and find a path
+    // enough
     return calculate_dist2(goal_x, latest_added_node.x, goal_y, latest_added_node.y) < pow(GOAL_THRESHOLD, 2);
 }
 
-std::vector<Node> RRT::find_path(std::vector<Node> &tree, Node &latest_added_node) {
+std::vector<Node> RRT::find_path(std::vector<Node> &tree, Node& node) {
     // This method traverses the tree from the node that has been determined
     // as goal
-    // Args:
-    //   latest_added_node (Node): latest addition to the tree that has been
-    //      determined to be close enough to the goal
-    // Returns:
-    //   path (std::vector<Node>): the vector that represents the order of
-    //      of the nodes traversed as the found path
     std::vector<Node> found_path;
-    Node current = latest_added_node;
-    while (!tree.at(current.parent).is_root){
+    Node current = node;
+    while (!current.is_root){
         found_path.push_back(current);
         current = tree.at(current.parent);
     }
-    found_path.push_back(tree.at(current.parent)); // add start node
+    found_path.push_back(current); // add start node
     reverse(found_path.begin(), found_path.end());
     return found_path;
 }
 
 // RRT* methods
-double RRT::cost(std::vector<Node> &tree, Node &node) {
-    // This method returns the cost associated with a node
-    // Args:
-    //    tree (std::vector<Node>): the current tree
-    //    node (Node): the node the cost is calculated for
-    // Returns:
-    //    cost (double): the cost value associated with the node
-    double cost = 0;
-    // TODO: fill in this method
-
-    return cost;
-}
-
 double RRT::line_cost(Node &n1, Node &n2) {
     // This method returns the cost of the straight line path between two nodes
-    // Args:
-    //    n1 (Node): the Node at one end of the path
-    //    n2 (Node): the Node at the other end of the path
-    // Returns:
-    //    cost (double): the cost value associated with the path
 
-    double cost = 0;
-    // TODO: fill in this method
-
-    return cost;
+    return sqrt(calculate_dist2(n1.x, n2.x, n1.y, n2.y));
 }
 
-std::vector<int> RRT::near(std::vector<Node> &tree, Node &node) {
-    // This method returns the set of Nodes in the neighborhood of a 
-    // node.
-    // Args:
-    //   tree (std::vector<Node>): the current tree
-    //   node (Node): the node to find the neighborhood for
+std::vector<int> RRT::near(std::vector<Node> &tree, Node& node) {
+    // This method returns the set of Nodes in the neighborhood of a node.
     // Returns:
     //   neighborhood (std::vector<int>): the index of the nodes in the neighborhood
-
     std::vector<int> neighborhood;
-    // TODO:: fill in this method
-
+    neighborhood.clear();
+    for (int i=0; i<tree.size(); i++){
+        if (line_cost(tree.at(i), node) < NEAR_RANGE){
+            neighborhood.push_back(i);
+        }
+    }
     return neighborhood;
 }
 
 void RRT::visualize_tree(vector<Node>& tree){
-    visualization_msgs::Marker goal;
-    goal.header.stamp = ros::Time::now();
-    goal.header.frame_id = "map";
-    goal.id = 0;
-    goal.ns = "goal";
-    goal.type = visualization_msgs::Marker::POINTS;
-    goal.scale.x = goal.scale.y = 0.2;
-    goal.scale.z = 0.2;
-    goal.action = visualization_msgs::Marker::ADD;
-    goal.pose.orientation.w = 1.0;
-    goal.color.r = 1.0;
-    goal.color.a = 1.0;
-    // dots.lifetime = ros::Duration();
+    // plot goal first
+    geometry_msgs::Pose goal_pose;
+    goal_pose.orientation.w = 1.0;
+    goal_pose.position.x = waypoints_.at(curr_goal_ind_).x;
+    goal_pose.position.y = waypoints_.at(curr_goal_ind_).y;
+    goal_viz->set_pose(goal_pose);
+    goal_viz->publish_marker();
+    // plot tree
+    tree_nodes.points.clear();
+    tree_branch.points.clear();
 
-    goal.points.push_back(waypoints_.at(curr_goal_ind_));
-    tree_viz_pub_.publish(goal);
+    for (int i=0; i<tree.size(); i++){
+        geometry_msgs::Point p;
+        p.x = tree.at(i).x; p.y = tree.at(i).y;
+        tree_nodes.points.push_back(p);
+        for (int j=0; j<tree.at(i).children.size(); j++){
+            tree_branch.points.push_back(p);
+            geometry_msgs::Point p_child;
+            p_child.x = tree.at(tree.at(i).children.at(j)).x;
+            p_child.y = tree.at(tree.at(i).children.at(j)).y;
+            tree_branch.points.push_back(p_child);
+        }
+    }
+    tree_branches_pub_.publish(tree_branch);
+    tree_nodes_pub_.publish(tree_nodes);
 }
 
 void RRT::track_path(const nav_msgs::Path& path){
     //use pure pursuit to track the path planned by RRT
     int i =0;
-
     while (i<path.poses.size()-1){
         float x = path.poses.at(i).pose.position.x;
         float y = path.poses.at(i).pose.position.y;
@@ -468,36 +518,22 @@ void RRT::track_path(const nav_msgs::Path& path){
         i++;
     }
     //calculate setpoint for pure pursuit to track
-
     tf::Vector3 p1(path.poses.at(i).pose.position.x, path.poses.at(i).pose.position.y, 0.0);
     tf::Vector3 p2(path.poses.at(max(0,i-1)).pose.position.x, path.poses.at(max(0,i-1)).pose.position.y, 0.0);
-
     pos_sp_ = tf_.inverse() * ((p1 + p2) / 2.0);
     float curvature = 2*abs(pos_sp_.getY())/(LOOK_AHEAD_DIST * LOOK_AHEAD_DIST);
 
+    // publish drive cmds
     float steering_cmd =  P_GAIN * curvature;
     if (pos_sp_.getY()<0){steering_cmd *= -1.0;}
     publish_cmd(steering_cmd);
 
-    // visualize pos_sp
-    visualization_msgs::Marker pos_sp;
-    pos_sp.header.stamp = ros::Time::now();
-    pos_sp.header.frame_id = "map";
-    pos_sp.id = 1;
-    pos_sp.ns = "pos_sp";
-    pos_sp.type = visualization_msgs::Marker::SPHERE;
-    pos_sp.scale.x = pos_sp.scale.y = 0.2;
-    pos_sp.scale.z = 0.2;
-    pos_sp.action = visualization_msgs::Marker::ADD;
-    pos_sp.pose.orientation.w = 1.0;
-    pos_sp.color.b = 1.0;
-    pos_sp.color.a = 1.0;
-    // dots.lifetime = ros::Duration();
-
-    pos_sp.pose.position.x = (tf_*pos_sp_).x();
-    pos_sp.pose.position.y = (tf_*pos_sp_).y();
-
-    pos_sp_viz_pub_.publish(pos_sp);
+    // visualize setpoint for tracking
+    geometry_msgs::Pose pose;
+    pose.orientation.w = 1.0;
+    pose.position.x = pos_sp_.x(); pose.position.y = pos_sp_.y();
+    pos_sp_viz->set_pose(pose);
+    pos_sp_viz->publish_marker();
 }
 
 void RRT::publish_cmd(float steering_cmd){
@@ -511,3 +547,16 @@ void RRT::publish_cmd(float steering_cmd){
     ack_msg.drive.steering_angle_velocity = 1.0;
     drive_pub_.publish(ack_msg);
 }
+
+void RRT::update_children_cost(vector<Node>& tree, int root_node_ind, float cost_change){
+    if (tree.at(root_node_ind).children.empty()){
+        return;
+    }
+    else{
+        for (int i=1; i<tree.at(root_node_ind).children.size(); i++){
+            tree.at(tree.at(root_node_ind).children.at(i)).cost += cost_change;
+            update_children_cost(tree, tree.at(root_node_ind).children.at(i), cost_change);
+        }
+    }
+}
+

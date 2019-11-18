@@ -1,6 +1,8 @@
 //
 // Created by Yuwei Wang on 11/9/19.
 //
+//
+// Author: Yuwei Wang
 
 #ifndef SRC_OCCUPANCY_GRID_H
 #define SRC_OCCUPANCY_GRID_H
@@ -9,6 +11,7 @@
 
 #include <nav_msgs/OccupancyGrid.h>
 #include <visualization_msgs/Marker.h>
+#include <math.h>
 
 #define THRESHOLD 50
 
@@ -16,7 +19,7 @@ using namespace std;
 
 namespace occupancy_grid{
     int xy_ind2ind(const nav_msgs::OccupancyGrid& grid, int x_ind, int y_ind){
-        return y_ind * grid.info.width + x_ind;
+        return min(y_ind * int(grid.info.width) + x_ind, int(grid.data.size())-1);
     }
 
     int xy2ind(const nav_msgs::OccupancyGrid& grid, float x, float y){
@@ -55,12 +58,12 @@ namespace occupancy_grid{
         grid.data.at(xy2ind(grid, x, y)) = 100;
     }
 
-    void inflate_cell(nav_msgs::OccupancyGrid &grid, int i, float margin) {
+    void inflate_cell(nav_msgs::OccupancyGrid &grid, int i, float margin, int val) {
         int margin_cells = static_cast<int>(ceil(margin/grid.info.resolution));
         Pair res = ind2xy_ind(grid, i);
         for (int x = max(0, res.x_ind-margin_cells); x<min(int(grid.info.width-1), res.x_ind+margin_cells); x++){
             for (int y = max(0, res.y_ind-margin_cells); y<min(int(grid.info.height-1), res.y_ind+margin_cells); y++){
-                grid.data.at(xy_ind2ind(grid,x,y)) = 100;
+                grid.data.at(xy_ind2ind(grid,x,y)) = val;
             }
         }
     }
@@ -74,7 +77,7 @@ namespace occupancy_grid{
             }
         }
         for (int i=0; i<occupied_ind.size(); i++){
-            inflate_cell(grid, occupied_ind[i], margin);
+            inflate_cell(grid, occupied_ind[i], margin, 100);
         }
     }
 

@@ -1,0 +1,15 @@
+digraph G {
+"base_link" -> "laser"[label="Broadcaster: /racecar_simulator\nAverage rate: 979.484 Hz\nMost recent transform: 1573777605.827 ( 0.002 sec old)\nBuffer length: 4.992 sec\n"];
+"map" -> "base_link"[label="Broadcaster: /racecar_simulator\nAverage rate: 979.223 Hz\nMost recent transform: 1573777605.829 ( 0.001 sec old)\nBuffer length: 4.994 sec\n"];
+"front_left_hinge" -> "front_left_wheel"[label="Broadcaster: /racecar_simulator\nAverage rate: 979.223 Hz\nMost recent transform: 1573777605.829 ( 0.001 sec old)\nBuffer length: 4.994 sec\n"];
+"base_link" -> "front_left_hinge"[label="Broadcaster: /racecar/robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1573777605.829 sec old)\nBuffer length: 0.000 sec\n"];
+"front_right_hinge" -> "front_right_wheel"[label="Broadcaster: /racecar_simulator\nAverage rate: 979.223 Hz\nMost recent transform: 1573777605.829 ( 0.001 sec old)\nBuffer length: 4.994 sec\n"];
+"base_link" -> "front_right_hinge"[label="Broadcaster: /racecar/robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1573777605.829 sec old)\nBuffer length: 0.000 sec\n"];
+"base_link" -> "back_left_wheel"[label="Broadcaster: /racecar/robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1573777605.829 sec old)\nBuffer length: 0.000 sec\n"];
+"base_link" -> "back_right_wheel"[label="Broadcaster: /racecar/robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1573777605.829 sec old)\nBuffer length: 0.000 sec\n"];
+"base_link" -> "laser_model"[label="Broadcaster: /racecar/robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1573777605.829 sec old)\nBuffer length: 0.000 sec\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1573777605.829"[ shape=plaintext ] ;
+ }->"map";
+}
