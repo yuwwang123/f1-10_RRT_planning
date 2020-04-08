@@ -1,0 +1,13 @@
+<launch>
+    <node pkg="rrt" type="rrt_node" name="rrt_node" respawn="true" output="screen" >
+
+        <param name="SPEED" value="3.0"/>
+        <param name="P_GAIN" value="0.25"/>
+        <param name="MARGIN" value="0.2"/>
+        <param name="DETECTED_OBS_MARGIN" value="0.22"/>
+        <param name="SCAN_RANGE" value="4.0"/>
+        <param name="LOOK_AHEAD_DIST" value="0.4"/>
+        <param name="MAX_DECELARATION" value="2.0"/>
+
+    </node>
+</launch>

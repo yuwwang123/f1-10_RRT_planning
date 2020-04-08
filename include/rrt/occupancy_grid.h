@@ -63,12 +63,13 @@ namespace occupancy_grid{
         Pair res = ind2xy_ind(grid, i);
         for (int x = max(0, res.x_ind-margin_cells); x<min(int(grid.info.width-1), res.x_ind+margin_cells); x++){
             for (int y = max(0, res.y_ind-margin_cells); y<min(int(grid.info.height-1), res.y_ind+margin_cells); y++){
+                if (grid.data.at(xy_ind2ind(grid,x,y))>THRESHOLD) continue;
                 grid.data.at(xy_ind2ind(grid,x,y)) = val;
             }
         }
     }
 
-    void inflate_obstacles(nav_msgs::OccupancyGrid& grid, float margin){
+    void inflate_map(nav_msgs::OccupancyGrid& grid, float margin){
         vector<int> occupied_ind;
         occupied_ind.clear();
         for (int i=0; i<grid.data.size(); i++){

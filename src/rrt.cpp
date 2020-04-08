@@ -6,30 +6,36 @@
 #include <visualization_msgs/Marker.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
+#include <rrt/spline.h>
+#include <tf/transform_listener.h>
 
 using namespace std;
 
-const float MARGIN = 0.18;
-const float DETECTED_OBS_MARGIN = 0.2;
-const int MAX_ITER = 800;
-const int MIN_ITER = 400;
+//const float MARGIN = 0.18;
+//const float DETECTED_OBS_MARGIN = 0.2;
+const int MAX_ITER = 1200;
+const int MIN_ITER = 1000;
 const double X_SAMPLE_RANGE = 3;
 const double Y_SAMPLE_RANGE = 3;
-const double STD = 1.0;   // standard deviation for normal distribution
-const double GOAL_THRESHOLD = 0.1;
+const double STD = 1.5;   // standard deviation for normal distribution
+const double GOAL_THRESHOLD = 0.15;
 const double STEER_RANGE = 0.3;
-const float SCAN_RANGE = 3.0;
-const float GOAL_AHEAD_DIST = 2.5;
-const float LOOK_AHEAD_DIST = 0.4;
-const float P_GAIN = 0.3;
-const float SPEED = 3;
-const float NEAR_RANGE = 0.8;
+//const float SCAN_RANGE = 3.0;
+const float GOAL_AHEAD_DIST = 3.5;
+//const float LOOK_AHEAD_DIST = 0.4;
+//const float P_GAIN = 0.3;
+//const float SPEED = 2.7;
+const float NEAR_RANGE = 1.0;
 
 const string file_name = "/home/yuwei/rcws/logs/yuwei_wp.csv";
 
+//const string pose_topic = "pf/pose/odom";
 const string pose_topic = "odom";
+
 const string scan_topic = "scan";
-const string drive_topic = "nav";
+//const string drive_topic = "/vesc/high_level/ackermann_cmd_mux/input/nav_1";
+const string drive_topic = "/nav";
+
 
 
 RRT::~RRT() {
@@ -42,9 +48,13 @@ RRT::RRT(ros::NodeHandle &nh): nh_(nh), gen_((std::random_device())()) {
     odom_sub_ = nh_.subscribe(pose_topic, 10, &RRT::odom_callback, this);
     scan_sub_ = nh_.subscribe(scan_topic, 10, &RRT::scan_callback, this);
 
+    path_pub_ = nh_.advertise<visualization_msgs::Marker>("path_found", 1);
+    map_update_pub_ = nh_.advertise<nav_msgs::OccupancyGrid>("map_updated", 5);
+
     drive_pub_ = nh_.advertise<ackermann_msgs::AckermannDriveStamped>(drive_topic, 1);
     obstacle_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("obstacles_inflated", 1);
-    path_pub_ = nh_.advertise<nav_msgs::Path>("path_found", 1);
+
+
     tree_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("rrt_tree", 1);
 
     pos_sp_viz_pub_ = nh_.advertise<visualization_msgs::Marker>("pos_sp_", 1);
@@ -79,6 +89,17 @@ RRT::RRT(ros::NodeHandle &nh): nh_(nh), gen_((std::random_device())()) {
     load_waypoints(file_name);
     reset_goal();
     ROS_INFO("Created new RRT Object.");
+    last_time_ = ros::Time::now().toSec();
+
+
+    nh_.param<float>("/rrt_node/SPEED", SPEED, 5.0);
+    nh_.param<float>("/rrt_node/MARGIN", MARGIN, 0.25);
+    nh_.param<float>("/rrt_node/DETECTED_OBS_MARGIN",  DETECTED_OBS_MARGIN, 0.2);
+    nh_.param<float>("/rrt_node/P_GAIN", P_GAIN, 0.3);
+    nh_.param<float>("/rrt_node/SCAN_RANGE", SCAN_RANGE, 3.5);
+    nh_.param<float>("/rrt_node/LOOK_AHEAD_DIST", LOOK_AHEAD_DIST, 0.5);
+    nh_.param<float>("/rrt_node/MAX_DECELARATION", MAX_DECELARATION, 0.7*SPEED);
+
 }
 
 void RRT::init_occupancy_grid(){
@@ -92,7 +113,7 @@ void RRT::init_occupancy_grid(){
         ROS_INFO("Map received");
     }
     ROS_INFO("Initializing occupancy grid for map ...");
-    occupancy_grid::inflate_obstacles(map_, MARGIN);
+    occupancy_grid::inflate_map(map_, MARGIN);
 }
 
 void RRT::visualize_map(){
@@ -139,15 +160,19 @@ void RRT::load_waypoints(std::string file_name){
 void RRT::scan_callback(const sensor_msgs::LaserScan::ConstPtr &msg) {
 
     using namespace occupancy_grid;
-    tf::Quaternion q_tf;
-    tf::quaternionMsgToTF(car_pose_.orientation, q_tf);
-    tf::Vector3 origin;
-    origin = tf::Vector3(car_pose_.position.x, car_pose_.position.y, 0.0);
 
-    tf_.setOrigin(origin);
-    tf_.setRotation(q_tf);
+    tf::StampedTransform tf_stamped;
+    listener_.lookupTransform("/map", "/laser", ros::Time(0), tf_stamped);
+    tf_.setOrigin(tf_stamped.getOrigin());
+    tf_.setRotation(tf_stamped.getRotation());
 
+    //only reset map when the car has made enough progress
+//    if(ros::Time::now().toSec() - last_time_ > 5.0){
+//        map_updated_ = map_; // might be expensive to copy
+//        last_time_ = ros::Time::now().toSec();
+//    }
     map_updated_ = map_; // might be expensive to copy
+
 
     float angle_min = msg->angle_min;
     float angle_increment = msg->angle_increment;
@@ -159,7 +184,7 @@ void RRT::scan_callback(const sensor_msgs::LaserScan::ConstPtr &msg) {
         }
         if (!isnan(range) && !isinf(range)) {
             float angle = angle_min + angle_increment * i;
-            tf::Vector3 pos_in_car = tf::Vector3(range*cos(angle), range*sin(angle), 0.0);
+            tf::Vector3 pos_in_car(range*cos(angle), range*sin(angle), 0.0);
             tf::Vector3 pos_in_map = tf_ * pos_in_car;
             if (!is_xy_occupied(map_, pos_in_map.x(), pos_in_map.y())){
                 inflate_cell(map_updated_, xy2ind(map_updated_, pos_in_map.x(), pos_in_map.y()), DETECTED_OBS_MARGIN, 100);
@@ -167,17 +192,17 @@ void RRT::scan_callback(const sensor_msgs::LaserScan::ConstPtr &msg) {
         }
     }
     // free the cells in which the car occupies (dynamic layer)
-    inflate_cell(map_updated_, xy2ind(map_updated_, origin.x(), origin.y()), 0.2, 0);
+    inflate_cell(map_updated_, xy2ind(map_updated_, car_pose_.position.x, car_pose_.position.y), 0.25, 0);
+    map_update_pub_.publish(map_updated_);
 }
 
 bool comp_cost(Node& n1, Node& n2){
     return n1.cost < n2.cost;
 }
+
 void RRT::odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg) {
     // The pose callback when subscribed to particle filter's inferred pose
     // The RRT main loop happens here
-
-
     car_pose_ = odom_msg->pose.pose;
     Node start_node;
     start_node.x = car_pose_.position.x;
@@ -252,19 +277,46 @@ void RRT::odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg) {
         if(iter>MIN_ITER && !nodes_near_goal.empty()){
             Node best = *min_element(nodes_near_goal.begin(), nodes_near_goal.end(), comp_cost);
             vector<Node> path_found = find_path(tree, nodes_near_goal.back());
-            nav_msgs::Path path;
-            path.header.frame_id = "map";
+
+            visualization_msgs::Marker path_dots;
+            path_dots.header.frame_id = "map";
+            path_dots.id = 20;
+            path_dots.ns = "path";
+            path_dots.type = visualization_msgs::Marker::POINTS;
+            path_dots.scale.x = path_dots.scale.y = path_dots.scale.z = 0.08;
+            path_dots.action = visualization_msgs::Marker::ADD;
+            path_dots.pose.orientation.w = 1.0;
+            path_dots.color.g = 0.0;
+            path_dots.color.r = 1.0;
+            path_dots.color.a = 1.0;
+
             for (int i=0; i<path_found.size(); i++){
-                geometry_msgs::PoseStamped p;
-                p.pose.position.x = path_found.at(i).x;
-                p.pose.position.y = path_found.at(i).y;
-                p.pose.orientation.w = 1.0;
-                path.poses.push_back(p);
+                geometry_msgs::Point p;
+                p.x = path_found.at(i).x;
+                p.y = path_found.at(i).y;
+                path_dots.points.push_back(p);
             }
-            path_pub_.publish(path);
-            track_path(path);
+            double RRT_INTERVAL = 0.2;
+            vector<geometry_msgs::Point> path_processed;
+            for (int i=0; i< path_dots.points.size()-1; i++){
+                path_processed.push_back(path_dots.points[i]);
+                double dist = sqrt(pow(path_dots.points[i+1].x-path_dots.points[i].x, 2)
+                                   +pow(path_dots.points[i+1].y-path_dots.points[i].y, 2));
+                if (dist < RRT_INTERVAL) continue;
+                int num = static_cast<int>(ceil(dist/RRT_INTERVAL));
+                for(int j=1; j< num; j++){
+                    geometry_msgs::Point p;
+                    p.x = path_dots.points[i].x + j*((path_dots.points[i+1].x - path_dots.points[i].x)/num);
+                    p.y = path_dots.points[i].y + j*((path_dots.points[i+1].y - path_dots.points[i].y)/num);
+                    path_processed.push_back(p);
+                }
+            }
+
+            path_dots.points = path_processed;
+            path_pub_.publish(path_dots);
+//            track_path(path);
             visualize_tree(tree);
-            ROS_INFO("path found");
+            //ROS_INFO("path found");
             break;
         }
     }
@@ -290,7 +342,7 @@ void RRT::get_current_goal(){
         advance_goal();
     }
     // enough progress made, advance goal
-    else if(dist_to_goal2 < pow(GOAL_AHEAD_DIST*0.7, 2)){
+    else if(dist_to_goal2 < pow(GOAL_AHEAD_DIST*0.75, 2)){
         advance_goal();
     }
 }
@@ -354,8 +406,8 @@ std::vector<double> RRT::sample() {
 
    // double x = car_pose_.position.x + uni_dist_(gen_)*X_SAMPLE_RANGE;
    // double y = car_pose_.position.y + uni_dist_(gen_)*Y_SAMPLE_RANGE;
-    std::normal_distribution<double> norm_dist_x(waypoints_.at(curr_goal_ind_).x, STD);
-    std::normal_distribution<double> norm_dist_y(waypoints_.at(curr_goal_ind_).y, STD);
+    std::normal_distribution<double> norm_dist_x(0.6*waypoints_.at(curr_goal_ind_).x+0.4*car_pose_.position.x, STD);
+    std::normal_distribution<double> norm_dist_y(0.6*waypoints_.at(curr_goal_ind_).y+0.4*car_pose_.position.y, STD);
     double x = norm_dist_x(gen_);
     double y = norm_dist_y(gen_);
 
@@ -539,10 +591,14 @@ void RRT::track_path(const nav_msgs::Path& path){
 void RRT::publish_cmd(float steering_cmd){
     steering_cmd = min(steering_cmd, 0.41f);
     steering_cmd = max(steering_cmd, -0.41f);
-
+    double speed = SPEED;
+    if(abs(steering_cmd)>0.28){
+        speed -= (steering_cmd-0.28)/(0.41-0.28)*MAX_DECELARATION;
+    }
+    cout<<"speed: "<<speed<<endl;
     ackermann_msgs::AckermannDriveStamped ack_msg;
     ack_msg.header.stamp = ros::Time::now();
-    ack_msg.drive.speed = SPEED;
+    ack_msg.drive.speed = speed;
     ack_msg.drive.steering_angle = steering_cmd;
     ack_msg.drive.steering_angle_velocity = 1.0;
     drive_pub_.publish(ack_msg);

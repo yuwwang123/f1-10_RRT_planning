@@ -45,6 +45,15 @@ public:
 private:
     ros::NodeHandle nh_;
 
+    float SPEED;
+    float P_GAIN;
+    float MARGIN;
+    float DETECTED_OBS_MARGIN;
+    float SCAN_RANGE;
+    float LOOK_AHEAD_DIST;
+    float MAX_DECELARATION;
+
+
     // ros pub/sub
     ros::Subscriber odom_sub_;
     ros::Subscriber scan_sub_;
@@ -52,6 +61,8 @@ private:
     ros::Publisher drive_pub_;
     ros::Publisher obstacle_viz_pub_;
     ros::Publisher path_pub_;
+    ros::Publisher map_update_pub_;
+
     ros::Publisher tree_viz_pub_;
     ros::Publisher pos_sp_viz_pub_;
     ros::Publisher goal_viz_pub_;
@@ -66,7 +77,7 @@ private:
     visualization_msgs::Marker tree_branch;
     visualization_msgs::MarkerArray all_branches;
 
-    tf::TransformListener listener;
+    tf::TransformListener listener_;
     tf::Transform tf_;
     tf::Vector3 pos_sp_;   // setpoint for pure pursuit to track
 
@@ -76,6 +87,7 @@ private:
     geometry_msgs::Pose car_pose_;
     std::vector<geometry_msgs::Point> waypoints_;
     int curr_goal_ind_;
+    double last_time_;
     bool advance_goal_;
 
     std::mt19937 gen_;
