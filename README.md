@@ -4,5 +4,5 @@ Implementation of real-time RRT* on the ROS-enabled F1/10 autonomous racing car.
 
 Testing on F1/10 hardware:
 
-![](car_testing.gif)
+![](car_testing2.gif)
 
